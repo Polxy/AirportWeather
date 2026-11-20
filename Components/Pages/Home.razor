@@ -1,0 +1,237 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject IWeatherService WeatherApi
+
+<PageTitle>Airport Weather</PageTitle>
+
+<h1 class="mb-4">Airport Weather</h1>
+
+@* ---------- Add airport ---------- *@
+<div class="d-flex gap-2 mb-3" style="max-width: 520px;">
+    <select class="form-select" @bind="selectedCode">
+        <option value="">-- Choose an airport --</option>
+        @foreach (var a in AvailableAirports)
+        {
+            <option value="@a.Code">@a.Code – @a.Name</option>
+        }
+    </select>
+    <button class="btn btn-primary"
+            @onclick="AddAirportAsync"
+            disabled="@string.IsNullOrEmpty(selectedCode)">
+        Add
+    </button>
+</div>
+
+@* ---------- Refresh controls ---------- *@
+<div class="d-flex flex-wrap align-items-center gap-3 mb-4">
+    <button class="btn btn-outline-secondary" @onclick="RefreshAllAsync">🔄 Refresh now</button>
+
+    <div class="d-flex align-items-center gap-2">
+        <label for="threshold" class="mb-0">Notify if change ≥</label>
+        <input id="threshold" type="number" step="0.1" min="0"
+               class="form-control" style="width: 90px;"
+               @bind="threshold" />
+        <span>°C</span>
+    </div>
+
+    <small class="text-muted">
+        Auto-refresh every @RefreshSeconds s · Last refresh: @(lastRefresh?.ToString("HH:mm:ss") ?? "–")
+    </small>
+</div>
+
+@* ---------- Notifications ---------- *@
+@if (alerts.Count > 0)
+{
+    <div class="alert alert-warning">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <strong>🔔 Temperature changes</strong>
+            <button class="btn btn-sm btn-outline-dark" @onclick="() => alerts.Clear()">Clear</button>
+        </div>
+        <ul class="mb-0">
+            @foreach (var alert in alerts)
+            {
+                <li>
+                    @alert.Time.ToString("HH:mm:ss") — <strong>@alert.AirportCode</strong>:
+                    @alert.OldTemperature.ToString("0.0") °C → @alert.NewTemperature.ToString("0.0") °C
+                    @(alert.Difference > 0 ? "▲" : "▼")
+                </li>
+            }
+        </ul>
+    </div>
+}
+
+@* ---------- Cards ---------- *@
+@if (watched.Count == 0)
+{
+    <p class="text-muted">No airports selected. Add one above. ✈️</p>
+}
+else
+{
+    <div class="row g-3">
+        @foreach (var item in watched)
+        {
+            <div class="col-12 col-md-6 col-lg-4" @key="item.Airport.Code">
+                <WeatherCard Item="item" OnRemove="RemoveAirport" OnSimulate="SimulateChange" />
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private const int RefreshSeconds = 60;
+    private const int MaxAlerts = 10;
+
+    private readonly List<WatchedAirport> watched = new();
+    private readonly List<TemperatureAlert> alerts = new();
+    private readonly CancellationTokenSource cts = new();
+
+    private string selectedCode = "";
+    private double threshold = 0.5;
+    private DateTime? lastRefresh;
+
+    private IEnumerable<Airport> AvailableAirports =>
+        AirportData.All.Where(a => !watched.Any(w => w.Airport.Code == a.Code));
+
+    // ---------- Lifecycle ----------
+
+    protected override async Task OnInitializedAsync()
+    {
+        foreach (var code in new[] { "SFO", "LHR" })
+        {
+            var airport = AirportData.All.First(a => a.Code == code);
+            watched.Add(new WatchedAirport { Airport = airport });
+        }
+
+        await Task.WhenAll(watched.Select(LoadWeatherAsync));
+        lastRefresh = DateTime.Now;
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // OnAfterRender only runs when the page is interactive (not during prerender),
+        // so this is a safe place to start the timer exactly once.
+        if (firstRender)
+        {
+            _ = AutoRefreshLoopAsync();
+        }
+    }
+
+    private async Task AutoRefreshLoopAsync()
+    {
+        var token = cts.Token;
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(RefreshSeconds));
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                Console.WriteLine($"[AutoRefresh] {DateTime.Now:HH:mm:ss}");
+                // InvokeAsync = "run this on Blazor's UI thread"
+                await InvokeAsync(RefreshAllAsync);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected when the page is closed — the loop just stops.
+        }
+    }
+
+    public void Dispose()
+    {
+        // Called when the user leaves the page: stop the timer.
+        cts.Cancel();
+        cts.Dispose();
+    }
+
+    // ---------- Actions ----------
+
+    private async Task AddAirportAsync()
+    {
+        var airport = AirportData.All.FirstOrDefault(a => a.Code == selectedCode);
+        if (airport is null || watched.Any(w => w.Airport.Code == airport.Code))
+            return;
+
+        var item = new WatchedAirport { Airport = airport };
+        watched.Add(item);
+        selectedCode = "";
+
+        await LoadWeatherAsync(item);
+    }
+
+    private void RemoveAirport(WatchedAirport item)
+    {
+        watched.Remove(item);
+    }
+
+    private async Task RefreshAllAsync()
+    {
+        // ToList() takes a copy, so removing a card during refresh doesn't break the loop
+        var tasks = watched.ToList().Select(LoadWeatherAsync).ToList();
+        StateHasChanged();             // show "refreshing..." right away
+
+        await Task.WhenAll(tasks);
+
+        lastRefresh = DateTime.Now;
+        StateHasChanged();             // show the new data
+    }
+
+    // Debug helper: change the STORED temperature by ±1–3 °C.
+    // On the next refresh, the real API value will differ → the notifier fires.
+    private void SimulateChange(WatchedAirport item)
+    {
+        if (item.Weather is null) return;
+
+        var change = Random.Shared.Next(10, 31) / 10.0;      // 1.0 to 3.0
+        if (Random.Shared.Next(2) == 0) change = -change;
+
+        item.Weather.Temperature += change;
+    }
+
+    // ---------- Weather loading + change detection ----------
+
+    private async Task LoadWeatherAsync(WatchedAirport item)
+    {
+        item.IsLoading = true;
+        item.Error = null;
+
+        var oldTemperature = item.Weather?.Temperature;   // null on first load
+
+        try
+        {
+            var newWeather = await WeatherApi.GetCurrentWeatherAsync(item.Airport);
+            item.Weather = newWeather;
+
+            if (oldTemperature is double oldTemp)
+            {
+                CheckForChange(item, oldTemp, newWeather.Temperature);
+            }
+        }
+        catch (Exception ex)
+        {
+            item.Error = $"Could not load weather: {ex.Message}";
+        }
+        finally
+        {
+            item.IsLoading = false;
+        }
+    }
+
+    private void CheckForChange(WatchedAirport item, double oldTemp, double newTemp)
+    {
+        var difference = newTemp - oldTemp;
+
+        if (Math.Abs(difference) >= threshold && watched.Contains(item))
+        {
+            item.LastChange = difference;
+            alerts.Insert(0, new TemperatureAlert(item.Airport.Code, oldTemp, newTemp, DateTime.Now));
+
+            if (alerts.Count > MaxAlerts)
+                alerts.RemoveAt(alerts.Count - 1);   // keep only the newest 10
+        }
+        else
+        {
+            item.LastChange = null;   // no notable change → remove highlight
+        }
+    }
+}

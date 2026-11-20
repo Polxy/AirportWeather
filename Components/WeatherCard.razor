@@ -1,0 +1,63 @@
+<div class="card h-100 shadow-sm @BorderClass">
+    <div class="card-body">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+            <h5 class="card-title mb-0">@Item.Airport.Code – @Item.Airport.Name</h5>
+            <button class="btn btn-sm btn-outline-danger"
+                    title="Remove"
+                    @onclick="() => OnRemove.InvokeAsync(Item)">✕</button>
+        </div>
+
+        @if (Item.Error is not null)
+        {
+            <div class="alert alert-danger py-2 mb-0">@Item.Error</div>
+        }
+        else if (Item.Weather is null)
+        {
+            <p class="text-muted mb-0"><em>Loading...</em></p>
+        }
+        else
+        {
+            <p class="mb-1">
+                🌡️ Temperature: <strong>@Item.Weather.Temperature.ToString("0.0") °C</strong>
+                @if (Item.LastChange is double change)
+                {
+                    <span class="badge ms-1 @(change > 0 ? "bg-danger" : "bg-primary")">
+                        @(change > 0 ? "▲ +" : "▼ ")@change.ToString("0.0")
+                    </span>
+                }
+            </p>
+            <p class="mb-1">💧 Humidity: @Item.Weather.Humidity.ToString("0") %</p>
+            <p class="mb-1">💨 Wind: @Item.Weather.WindSpeed.ToString("0.0") km/h</p>
+            <p class="mb-2">Condition: @Item.Weather.Condition</p>
+
+            <div class="d-flex justify-content-between align-items-center">
+                <small class="text-muted">
+                    Updated: @Item.Weather.LastUpdated.ToString("HH:mm:ss")
+                    @if (Item.IsLoading) { <span> · refreshing...</span> }
+                </small>
+                <button class="btn btn-sm btn-link p-0"
+                        title="Debug: fake a temperature change"
+                        @onclick="() => OnSimulate.InvokeAsync(Item)">🧪 Simulate</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public WatchedAirport Item { get; set; } = default!;
+
+    [Parameter]
+    public EventCallback<WatchedAirport> OnRemove { get; set; }
+
+    [Parameter]
+    public EventCallback<WatchedAirport> OnSimulate { get; set; }
+
+    // Red border if warmer, blue if colder, nothing otherwise
+    private string BorderClass => Item.LastChange switch
+    {
+        > 0 => "border-danger border-2",
+        < 0 => "border-primary border-2",
+        _ => ""
+    };
+}
