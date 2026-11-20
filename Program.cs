@@ -2,16 +2,32 @@ using AirportWeather.Components;
 
 using AirportWeather.Services;
 
+using AirportWeather.Models;
+using Microsoft.Extensions.Options;
+
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddHttpClient<IWeatherService, WeatherService>(client =>
+builder.Services.Configure<WeatherApiOptions>(
+    builder.Configuration.GetSection(WeatherApiOptions.SectionName));
+
+builder.Services.AddHttpClient<IWeatherService, WeatherService>((serviceProvider, client) =>
 {
-    client.BaseAddress = new Uri("https://api.open-meteo.com/");
+    var options = serviceProvider.GetRequiredService<IOptions<WeatherApiOptions>>().Value;
+
+    client.BaseAddress = new Uri(options.BaseUrl);
+
+    // Option A: the API wants the key in a HEADER (most modern APIs)
+    // client.DefaultRequestHeaders.Add("X-Api-Key", options.ApiKey);
 });
+
+//builder.Services.AddHttpClient<IWeatherService, WeatherService>(client => 
+//{
+//    client.BaseAddress = new Uri("https://api.open-meteo.com/");
+//});
 
 var app = builder.Build();
 
